@@ -1,0 +1,41 @@
+[project]
+name = "uniface"
+version = "0.1.0"
+description = "Uniface"
+readme = "README.md"
+requires-python = ">=3.8, <=3.11"
+dependencies = [
+    "numpy<2",
+    "on>=0.0.4",
+    "onnx>=1.17.0",
+    "onnxruntime>=1.20.1",
+    "onnxruntime-gpu>=1.20.1",
+    "opencv-python>=4.11.0.86",
+    "opencv-python-headless>=4.11.0.86",
+    "pytest>=8.3.4",
+    "requests>=2.32.3",
+    "scikit-image",
+    "torch>=2.5.1",
+]
+authors = [
+    {name = "Ariel Bereslavsky", email = "ariael2009@gmail.com"},
+]
+license = {text = "MIT"}
+src-layout = ['uniface']
+
+[tool.uv.sources]
+torch = { index = "pytorch_cuda121" }
+torchaudio = { index = "pytorch_cuda121" }
+
+[tool.uv]
+cache-dir = "/nvme/argos/cache"
+link-mode = "symlink"
+
+[[tool.uv.index]]
+name = "pytorch_cuda121"
+url = "https://download.pytorch.org/whl/cu121"
+explicit = true
+
+[build-system]
+requires = ['hatchling']
+build-backend = "hatchling.build"
