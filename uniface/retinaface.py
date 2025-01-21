@@ -9,6 +9,7 @@ import onnxruntime as ort
 
 import torch
 from typing import Tuple, List, Optional, Literal
+from dataclasses import dataclass, field
 
 from uniface.log import Logger
 from uniface.model_store import verify_model_weights
@@ -18,8 +19,37 @@ from uniface.common import (
     resize_image,
     decode_boxes,
     generate_anchors,
-    decode_landmarks
+    decode_landmarks,
 )
+
+
+@dataclass
+class OnnxProvider:
+    execution: Literal["cpu", "cuda"] = field(default="cpu")
+    device_id: Optional[int] = field(default=None)
+
+    def to_list(self):
+        if self.execution == "cuda":
+            return ["CUDAExecutionProvider", {"device_id": self.device_id}]
+        elif self.execution == "cpu":
+            return ["CPUExecutionProvider", {}]
+        else:
+            raise Exception("Uknwon execution provider")
+
+
+@dataclass
+class OnnxSessionFactory:
+    model_path: str
+    providers: List[OnnxProvider] = field(default_factory=lambda: [OnnxProvider("cpu")])
+
+    def build(self) -> ort.InferenceSession:
+        providers, provider_options = zip(
+            *[provider.to_list() for provider in self.providers]
+        )
+
+        return ort.InferenceSession(
+            self.model_path, providers=providers, provider_options=provider_options
+        )
 
 
 class RetinaFace:
@@ -54,9 +84,12 @@ class RetinaFace:
         pre_nms_topk: int = 5000,
         post_nms_topk: int = 750,
         dynamic_size: Optional[bool] = False,
-        input_size: Optional[Tuple[int, int]] = (640, 640),  # Default input size if dynamic_size=False
+        input_size: Optional[Tuple[int, int]] = (
+            640,
+            640,
+        ),  # Default input size if dynamic_size=False
+        providers: Optional[List[OnnxProvider]] = None,
     ) -> None:
-
         self.conf_thresh = conf_thresh
         self.nms_thresh = nms_thresh
         self.pre_nms_topk = pre_nms_topk
@@ -79,6 +112,11 @@ class RetinaFace:
             self._priors = generate_anchors(image_size=input_size)
             Logger.debug("Generated anchors for static input size.")
 
+        if providers is None:
+            self.providers = [OnnxProvider("cpu")]
+        else:
+            self.providers = providers
+
         # Initialize model
         self._initialize_model(self._model_path)
 
@@ -93,12 +131,16 @@ class RetinaFace:
             RuntimeError: If the model fails to load, logs an error and raises an exception.
         """
         try:
-            self.session = ort.InferenceSession(model_path)
+            self.session = OnnxSessionFactory(
+                model_path=model_path, providers=self.providers
+            ).build()
             self.input_name = self.session.get_inputs()[0].name
             Logger.info(f"Successfully initialized the model from {model_path}")
         except Exception as e:
             Logger.error(f"Failed to load model from '{model_path}': {e}")
-            raise RuntimeError(f"Failed to initialize model session for '{model_path}'") from e
+            raise RuntimeError(
+                f"Failed to initialize model session for '{model_path}'"
+            ) from e
 
     def preprocess(self, image: np.ndarray) -> np.ndarray:
         """Preprocess input image for model inference.
@@ -130,7 +172,7 @@ class RetinaFace:
         image: np.ndarray,
         max_num: Optional[int] = 0,
         metric: Literal["default", "max"] = "default",
-        center_weight: Optional[float] = 2.0
+        center_weight: Optional[float] = 2.0,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """
         Perform face detection on an input image and return bounding boxes and landmarks.
@@ -138,11 +180,11 @@ class RetinaFace:
         Args:
             image (np.ndarray): Input image as a NumPy array of shape (height, width, channels).
             max_num (int, optional): Maximum number of detections to return. Defaults to 1.
-            metric (str, optional): Metric for ranking detections when `max_num` is specified. 
+            metric (str, optional): Metric for ranking detections when `max_num` is specified.
                 Options:
                 - "default": Prioritize detections closer to the image center.
                 - "max": Prioritize detections with larger bounding box areas.
-            center_weight (float, optional): Weight for penalizing detections farther from the image center 
+            center_weight (float, optional): Weight for penalizing detections farther from the image center
                 when using the "default" metric. Defaults to 2.0.
 
         Returns:
@@ -155,7 +197,9 @@ class RetinaFace:
 
         if self.dynamic_size:
             height, width, _ = image.shape
-            self._priors = generate_anchors(image_size=(height, width))  # generate anchors for each input image
+            self._priors = generate_anchors(
+                image_size=(height, width)
+            )  # generate anchors for each input image
             resize_factor = 1.0  # No resizing
         else:
             image, resize_factor = resize_image(image, target_shape=self.input_size)
@@ -167,22 +211,28 @@ class RetinaFace:
         outputs = self.inference(image_tensor)
 
         # Postprocessing
-        detections, landmarks = self.postprocess(outputs, resize_factor, shape=(width, height))
+        detections, landmarks = self.postprocess(
+            outputs, resize_factor, shape=(width, height)
+        )
 
         if max_num > 0 and detections.shape[0] > max_num:
             # Calculate area of detections
-            areas = (detections[:, 2] - detections[:, 0]) * (detections[:, 3] - detections[:, 1])
+            areas = (detections[:, 2] - detections[:, 0]) * (
+                detections[:, 3] - detections[:, 1]
+            )
 
             # Calculate offsets from image center
             center = (height // 2, width // 2)
-            offsets = np.vstack([
-                (detections[:, 0] + detections[:, 2]) / 2 - center[1],
-                (detections[:, 1] + detections[:, 3]) / 2 - center[0]
-            ])
+            offsets = np.vstack(
+                [
+                    (detections[:, 0] + detections[:, 2]) / 2 - center[1],
+                    (detections[:, 1] + detections[:, 3]) / 2 - center[0],
+                ]
+            )
             offset_dist_squared = np.sum(np.power(offsets, 2.0), axis=0)
 
             # Calculate scores based on the chosen metric
-            if metric == 'max':
+            if metric == "max":
                 scores = areas
             else:
                 scores = areas - offset_dist_squared * center_weight
@@ -195,7 +245,9 @@ class RetinaFace:
 
         return detections, landmarks
 
-    def postprocess(self, outputs: List[np.ndarray], resize_factor: float, shape: Tuple[int, int]) -> Tuple[np.ndarray, np.ndarray]:
+    def postprocess(
+        self, outputs: List[np.ndarray], resize_factor: float, shape: Tuple[int, int]
+    ) -> Tuple[np.ndarray, np.ndarray]:
         """
         Process the model outputs into final detection results.
 
@@ -214,13 +266,21 @@ class RetinaFace:
                 - landmarks (np.ndarray): Array of detected facial landmarks.
                 Shape: (num_detections, 5, 2), where each row contains 5 landmark points (x, y).
         """
-        loc, conf, landmarks = outputs[0].squeeze(0), outputs[1].squeeze(0), outputs[2].squeeze(0)
+        loc, conf, landmarks = (
+            outputs[0].squeeze(0),
+            outputs[1].squeeze(0),
+            outputs[2].squeeze(0),
+        )
 
         # Decode boxes and landmarks
         boxes = decode_boxes(torch.tensor(loc), self._priors).cpu().numpy()
-        landmarks = decode_landmarks(torch.tensor(landmarks), self._priors).cpu().numpy()
+        landmarks = (
+            decode_landmarks(torch.tensor(landmarks), self._priors).cpu().numpy()
+        )
 
-        boxes, landmarks = self._scale_detections(boxes, landmarks, resize_factor, shape=(shape[0], shape[1]))
+        boxes, landmarks = self._scale_detections(
+            boxes, landmarks, resize_factor, shape=(shape[0], shape[1])
+        )
 
         # Extract confidence scores for the face class
         scores = conf[:, 1]
@@ -230,22 +290,33 @@ class RetinaFace:
         boxes, landmarks, scores = boxes[mask], landmarks[mask], scores[mask]
 
         # Sort by scores
-        order = scores.argsort()[::-1][:self.pre_nms_topk]
+        order = scores.argsort()[::-1][: self.pre_nms_topk]
         boxes, landmarks, scores = boxes[order], landmarks[order], scores[order]
 
         # Apply NMS
-        detections = np.hstack((boxes, scores[:, np.newaxis])).astype(np.float32, copy=False)
+        detections = np.hstack((boxes, scores[:, np.newaxis])).astype(
+            np.float32, copy=False
+        )
         keep = nms(detections, self.nms_thresh)
         detections, landmarks = detections[keep], landmarks[keep]
 
         # Keep top-k detections
-        detections, landmarks = detections[:self.post_nms_topk], landmarks[:self.post_nms_topk]
+        detections, landmarks = (
+            detections[: self.post_nms_topk],
+            landmarks[: self.post_nms_topk],
+        )
 
         landmarks = landmarks.reshape(-1, 5, 2).astype(np.int32)
 
         return detections, landmarks
 
-    def _scale_detections(self, boxes: np.ndarray, landmarks: np.ndarray, resize_factor: float, shape: Tuple[int, int]) -> Tuple[np.ndarray, np.ndarray]:
+    def _scale_detections(
+        self,
+        boxes: np.ndarray,
+        landmarks: np.ndarray,
+        resize_factor: float,
+        shape: Tuple[int, int],
+    ) -> Tuple[np.ndarray, np.ndarray]:
         """Scale bounding boxes and landmarks to the original image size."""
         bbox_scale = np.array([shape[0], shape[1]] * 2)
         boxes = boxes * bbox_scale / resize_factor
