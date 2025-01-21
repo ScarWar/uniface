@@ -2,17 +2,12 @@
 # Author: Yakhyokhuja Valikhujaev
 # GitHub: https://github.com/yakhyo
 
-import os
-import cv2
+from dataclasses import dataclass, field
+from typing import Tuple, List, Optional, Literal
+
 import numpy as np
 import onnxruntime as ort
-
 import torch
-from typing import Tuple, List, Optional, Literal
-from dataclasses import dataclass, field
-
-from uniface.log import Logger
-from uniface.model_store import verify_model_weights
 
 from uniface.common import (
     nms,
@@ -21,6 +16,8 @@ from uniface.common import (
     generate_anchors,
     decode_landmarks,
 )
+from uniface.log import Logger
+from uniface.model_store import verify_model_weights
 
 
 @dataclass
@@ -34,7 +31,17 @@ class OnnxProvider:
         elif self.execution == "cpu":
             return ["CPUExecutionProvider", {}]
         else:
-            raise Exception("Uknwon execution provider")
+            raise Exception("Unknown execution provider")
+
+    @classmethod
+    def from_device(cls, device: torch.device) -> "OnnxProvider":
+        if device.type == "cpu":
+            return OnnxProvider()
+        elif device.type == "cuda":
+            device_id = device.index if device.index is not None else 0
+            return OnnxProvider(execution='cuda', device_id=device_id)
+        else:
+            raise Exception("Unknown device")
 
 
 @dataclass
@@ -77,18 +84,18 @@ class RetinaFace:
     """
 
     def __init__(
-        self,
-        model: str,
-        conf_thresh: float = 0.5,
-        nms_thresh: float = 0.4,
-        pre_nms_topk: int = 5000,
-        post_nms_topk: int = 750,
-        dynamic_size: Optional[bool] = False,
-        input_size: Optional[Tuple[int, int]] = (
-            640,
-            640,
-        ),  # Default input size if dynamic_size=False
-        providers: Optional[List[OnnxProvider]] = None,
+            self,
+            model: str,
+            conf_thresh: float = 0.5,
+            nms_thresh: float = 0.4,
+            pre_nms_topk: int = 5000,
+            post_nms_topk: int = 750,
+            dynamic_size: Optional[bool] = False,
+            input_size: Optional[Tuple[int, int]] = (
+                    640,
+                    640,
+            ),  # Default input size if dynamic_size=False
+            providers: Optional[List[OnnxProvider]] = None,
     ) -> None:
         self.conf_thresh = conf_thresh
         self.nms_thresh = nms_thresh
@@ -168,11 +175,11 @@ class RetinaFace:
         return self.session.run(None, {self.input_name: input_tensor})
 
     def detect(
-        self,
-        image: np.ndarray,
-        max_num: Optional[int] = 0,
-        metric: Literal["default", "max"] = "default",
-        center_weight: Optional[float] = 2.0,
+            self,
+            image: np.ndarray,
+            max_num: Optional[int] = 0,
+            metric: Literal["default", "max"] = "default",
+            center_weight: Optional[float] = 2.0,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """
         Perform face detection on an input image and return bounding boxes and landmarks.
@@ -218,7 +225,7 @@ class RetinaFace:
         if max_num > 0 and detections.shape[0] > max_num:
             # Calculate area of detections
             areas = (detections[:, 2] - detections[:, 0]) * (
-                detections[:, 3] - detections[:, 1]
+                    detections[:, 3] - detections[:, 1]
             )
 
             # Calculate offsets from image center
@@ -246,7 +253,7 @@ class RetinaFace:
         return detections, landmarks
 
     def postprocess(
-        self, outputs: List[np.ndarray], resize_factor: float, shape: Tuple[int, int]
+            self, outputs: List[np.ndarray], resize_factor: float, shape: Tuple[int, int]
     ) -> Tuple[np.ndarray, np.ndarray]:
         """
         Process the model outputs into final detection results.
@@ -311,11 +318,11 @@ class RetinaFace:
         return detections, landmarks
 
     def _scale_detections(
-        self,
-        boxes: np.ndarray,
-        landmarks: np.ndarray,
-        resize_factor: float,
-        shape: Tuple[int, int],
+            self,
+            boxes: np.ndarray,
+            landmarks: np.ndarray,
+            resize_factor: float,
+            shape: Tuple[int, int],
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Scale bounding boxes and landmarks to the original image size."""
         bbox_scale = np.array([shape[0], shape[1]] * 2)
