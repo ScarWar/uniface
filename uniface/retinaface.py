@@ -279,22 +279,24 @@ class RetinaFace:
             outputs[2].squeeze(0),
         )
 
+        # Extract confidence scores for the face class
+        scores = conf[:, 1]
+        mask = scores > self.conf_thresh
+
+        # Filter by confidence threshold
+        loc, landmarks, scores = loc[mask], landmarks[mask], scores[mask]
+
         # Decode boxes and landmarks
-        boxes = decode_boxes(torch.tensor(loc), self._priors).cpu().numpy()
+        boxes = decode_boxes(torch.tensor(loc), self._priors[mask]).cpu().numpy()
         landmarks = (
-            decode_landmarks(torch.tensor(landmarks), self._priors).cpu().numpy()
+            decode_landmarks(torch.tensor(landmarks), self._priors[mask]).cpu().numpy()
         )
 
         boxes, landmarks = self._scale_detections(
             boxes, landmarks, resize_factor, shape=(shape[0], shape[1])
         )
 
-        # Extract confidence scores for the face class
-        scores = conf[:, 1]
-        mask = scores > self.conf_thresh
-
         # Filter by confidence threshold
-        boxes, landmarks, scores = boxes[mask], landmarks[mask], scores[mask]
 
         # Sort by scores
         order = scores.argsort()[::-1][: self.pre_nms_topk]
